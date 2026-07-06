@@ -1,26 +1,22 @@
 """
-stable_pair.py — shared stable-pair solver (Kao's stable theorem).
+stable_pair.py — stable-pair solver (Kao's stable theorem).
 
-Extracted from the Layer-2 incremental implementation so that BOTH
-brute_force.py (Layer 1) and incremental_mt.py (Layer 2) call ONE copy of the
-stable-pair logic:
+LOGIC:
 
   * Kao's four stable-theorem cases (A/B/C/D), section 2 of the paper.
-  * Mod 1: in the (even, even) Case D, a pair is only stable when the two
-    means agree (within MEAN_EQ_TOL); otherwise it is forced unstable and the
-    search advances toward the higher temperature (left on a tie).
   * Stability is a TEMPERATURE-ONLY condition: a (left, right) pair is stable
     iff LS_T <= t_cand and RS_T <= t_cand. Means never enter the stability
     test -- they only feed the t_cand/m_cand formula.
+  * Exception: in the (even, even) Case D, a pair is only stable when the two
+    means agree (within MEAN_EQ_TOL); otherwise it is forced unstable and the
+    search advances toward the higher temperature (left on a tie).
   * When a pair is unstable the search advances the unstable/hotter side by
     one follower and re-tests. 
 
-INTERFACE
+INTERFACE:
   find_stable_pair(lefts, rights, ctx=None) -> (m, n, t_cand, m_cand)
     lefts, rights : [(depth, node, M_reading, T_reading), ...]
-                    -- already-built alternating-follower chains. The caller
-                    decides how to read M/T off its own node objects, so this
-                    module is node-agnostic.
+                    -- already-built alternating-follower chains. 
     returns        : (m, n, t_cand, m_cand)
                        m, n            stable depths along the two chains
                        t_cand, m_cand  the resulting T(G), M(G)
@@ -40,7 +36,7 @@ class ColdGameError(Exception):
     pass
 
 
-# Tolerance for Mod 1's mean-equality test (absorbs floating-point rounding).
+# Tolerance for mean-equality test of Case D (absorbs floating-point rounding).
 MEAN_EQ_TOL = 1e-9         # two means within this are treated as equal (Mod 1)
 #This is required so that there is no difference between -9.0 and -8.999999999999998.
 
@@ -64,7 +60,7 @@ def _apply_stable_theorem(m, n, LS_M, LS_T, RS_M, RS_T):
         return (LS_M - RS_M, RS_M)
     if n_odd:                                            # Case C (m even, n odd)
         return (LS_M - RS_M, LS_M)
-    return (max(LS_T, RS_T), LS_M )          # Case D
+    return (max(LS_T, RS_T), LS_M )                      # Case D
 
 
 def find_stable_pair(lefts, rights, ctx=None):
@@ -72,13 +68,6 @@ def find_stable_pair(lefts, rights, ctx=None):
     lefts, rights : [(depth, node, M_reading, T_reading), ...]
     Returns (m, n, T_cand, M_cand) -- the stable depths m, n plus the
     resulting T(G), M(G). Raises ColdGameError if both chains exhaust.
-
-    Stability is a TEMPERATURE condition only: a (left, right) pair is
-    stable iff LS_T <= t_cand and RS_T <= t_cand. M values (including
-    sentinel-infinite readings from unprocessed chain_terminals) do not
-    enter the stability test -- they only feed the t_cand/m_cand formula
-    via _apply_stable_theorem. When one side is sentinel, the resulting
-    m_cand is a loose-but-valid bound that tightens on later walks.
     """
     tr = ctx is not None and ctx.trace
 
@@ -103,10 +92,8 @@ def find_stable_pair(lefts, rights, ctx=None):
         ls_ok = (LS_T <= t_cand)
         rs_ok = (RS_T <= t_cand)
 
-        # Mod 1: in the (even, even) case (Case D), a pair can only be stable
-        # if the two means agree -- Case D's formula averages LS_M and RS_M,
-        # and the brute force's own comment notes "M(LS) should equal M(RS)".
-        # If the means differ the pair is NOT genuinely stable: force it
+        # Exception Case D: in the (even, even) case (Case D)
+        # if the means differ the pair is NOT genuinely stable: force it
         # unstable regardless of temperature and advance as usual (toward the
         # higher temperature; left on a tie -- handled by the branch below).
         even_even = (m % 2 == 0) and (n % 2 == 0)
@@ -124,7 +111,7 @@ def find_stable_pair(lefts, rights, ctx=None):
             print(f"          t_cand={t_cand}, m_cand={m_cand}")
             extra = ""
             if forced_unstable:
-                extra = ("   [Mod1: even-even & means differ "
+                extra = ("   [Case D: even-even & means differ "
                          "-> FORCED UNSTABLE]")
             print(f"          ls_ok={ls_ok} (LS_T<=t_cand), "
                   f"rs_ok={rs_ok} (RS_T<=t_cand){extra}")
@@ -138,9 +125,6 @@ def find_stable_pair(lefts, rights, ctx=None):
 
         if not ls_ok and not rs_ok:
             # Advance the side with the higher temperature; left on a tie.
-            # (This is exactly the direction Mod 1 asks for in the
-            # even-even forced-unstable case, and the pre-existing rule
-            # otherwise.)
             if LS_T > RS_T:
                 want = 'L'
             elif RS_T > LS_T:
