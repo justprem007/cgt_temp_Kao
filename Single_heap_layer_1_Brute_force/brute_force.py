@@ -8,8 +8,7 @@ Computes Mean (M) and Temperature (T) of a combinatorial game by:
      alternating followers.
   4. Applying the stable theorem (Cases A/B/C/D from Kao's paper, section 2).
 
-This is the REFERENCE implementation. No optimization, no pruning, no
-handling of incomplete trees. Any later layer must produce the same M and T.
+No optimization, no pruning, no handling of incomplete trees.
 
 =======================================================================
 NOTATION (from Kao 2000)
@@ -51,10 +50,10 @@ THE STABLE THEOREM (Section 2 of Kao's paper)
 """
 
 
-# The stable-pair solver and the ColdGameError exception now live in
-# stable_pair.py and are shared with the Layer-2 incremental implementation.
-# ColdGameError is re-exported here so existing imports keep working.
+# The stable-pair solver and the ColdGameError exception is in stable_pair.py
 from stable_pair import find_stable_pair, ColdGameError
+from game_input import is_heapgo_position          # single-source format detection
+from heapgo_to_tree import heapgo_to_tree           # eager Heapgo heap -> tree
 
 
 class GameNode:
@@ -201,13 +200,19 @@ def brute_force_mt(game, verbose=False):
     Top-level entry point for Layer 1.
 
     Arguments:
-        game    : nested-list game tree (terminals are numbers; internal nodes
-                  are [left, right]).
+        game : a single Heapgo heap [(v, c), ...]  OR  a nested-list game tree
+               (terminals are numbers; internal nodes are [left, right]).
+               CGSuite '{L | R}' strings are parsed to nested lists by the
+               caller (e.g. main.py) before reaching here.
         verbose : if True, print the full bottom-up trace.
 
     Returns:
         (M, T) — the mean and temperature of the root.
     """
+    if is_heapgo_position(game):
+        if verbose:
+            print("[brute_force] Heapgo heap -> converting to nested-list tree")
+        game = heapgo_to_tree(game)
     root = build_tree(game)
     compute_mt(root, verbose=verbose)
     return (root.M, root.T)
