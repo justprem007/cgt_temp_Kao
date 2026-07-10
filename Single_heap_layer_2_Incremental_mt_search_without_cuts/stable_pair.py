@@ -41,12 +41,13 @@ MEAN_EQ_TOL = 1e-9         # two means within this are treated as equal (Mod 1)
 #This is required so that there is no difference between -9.0 and -8.999999999999998.
 
 def _case_name(m, n):
-    mo, no = m % 2 == 1, n % 2 == 1
-    if mo and no:  return "A (m odd, n odd)"
-    if mo:         return "B (m odd, n even)"
-    if no:         return "C (m even, n odd)"
-    return "D (m even, n even)"
-
+    odd_m = (m % 2 == 1)
+    odd_n = (n % 2 == 1)
+    if odd_m and odd_n: return "Case A (m odd, n odd)"
+    if odd_m:           return "Case B (m odd, n even)"
+    if odd_n:           return "Case C (m even, n odd)"
+    return "Case D (m even, n even)"
+ 
 
 # ===========================================================================
 # Stable theorem.

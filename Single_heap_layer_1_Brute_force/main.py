@@ -1,32 +1,44 @@
 """
-main.py — User entry point for LAYER 1 (brute force).
+main.py — user entry point for Layer 1 (brute force).
 
-Accepts three input formats for a game G:
-  1. CGSuite string:  G = "{11 | {8 | 0}}"     (parsed to nested-list here)
-  2. Nested list:     G = [11, [8, 0]]          (passed straight to brute_force)
-  3. Heapgo heap:     G = [(2, 'red'), ...]      (a single heap; passed straight
-                                                  to brute_force, which converts
-                                                  it to a tree)
+You give it a game G in any of three formats. main.py figures out which format
+it is, turns it into a nested list, and hands that to brute_force_mt:
 
-brute_force_mt builds the full tree and computes the mean and temperature
-bottom-up. Format detection lives in game_input.py (used by brute_force);
-curly-brace strings are the only form that needs preprocessing here.
+  1. CGSuite string:  G = "{11 | {8 | 0}}"     -> parsed by game_parser
+  2. Nested list:     G = [11, [8, 0]]          -> used as-is
+  3. Heapgo heap:     G = [(2, 'red'), ...]      -> a single heap, expanded by
+                                                    heapgo_to_tree
+
+brute_force_mt only ever sees a nested-list game: it builds the full tree and
+computes the mean and temperature bottom-up.
+
+Which format an input is (the routing) is decided here in main.py. Checking
+that an input is actually well-formed happens per format, at the point where it
+becomes a nested list: a nested list is checked in brute_force.py as build_tree
+walks it, a Heapgo heap is checked in heapgo.py during the conversion, and a
+curly-brace string is checked in game_parser.py while it is parsed.
 """
 
 from game_parser import parse_game
-from brute_force import brute_force_mt, ColdGameError
-
+from heapgo_to_tree import heapgo_to_tree
+from brute_force import brute_force_mt
+from stable_pair import ColdGameError
 
 def _prep_input(G):
     """
-    CGSuite strings are parsed to nested-list form (game_parser). Every other
-    input — a single Heapgo heap or a nested-list game — is handed straight to
-    brute_force_mt, which detects a Heapgo heap and converts it itself.
+    Convert any of the three input forms into a nested-list game for
+    brute_force_mt.
     """
     if isinstance(G, str):
-        print("[main] Detected CGSuite string input")
+        print("[main] CGSuite string -> parsing to nested-list")
         G = parse_game(G)
-        print("[main] Parsed to nested-list:", G)
+        print("[main] Parsed:", G)
+        return G
+
+    if isinstance(G, list) and len(G) > 0 and isinstance(G[0], tuple):
+        print("[main] Heapgo heap -> converting to nested-list tree")
+        return heapgo_to_tree(G)
+
     return G
 
 
@@ -35,16 +47,15 @@ def main():
     # Uncomment exactly ONE of the following.
 
     # --- CGSuite string ---
-    # G = "{11 | {8 | 0}}"          # Position A from Kao's paper; expect M=8, T=3
-    # G = "{11 | {6 | 0}}"          # Position B from Kao's paper; expect M=7, T=4
-    # G = "{0 | 2}"                 # cold game -> ColdGameError
+    #G = "{11 | {8 | 0}}"          # expect M=8, T=3
+    #G = "{0 | 2}"                 # cold game -> ColdGameError
 
     # --- Nested list ---
-    # G = [11, [8, 0]]              # same as Position A
+    #G = [11, [8, 0]]              # expect M=8, T=3
 
     # --- Heapgo heap (single heap, bare form) ---
-    G = [(2, 'red'), (3, 'red'), (5, 'blue')]   # expect M=1, T=7
-    # G = [(4, 'red'), (9, 'blue'), (6, 'red'), (3, 'red'), (1, 'blue')]
+    #G = [(2, 'red'), (3, 'red'), (5, 'blue')]   # expect M=1, T=7
+    #G = [(4, 'red'), (9, 'blue'), (6, 'red'), (3, 'red'), (1, 'blue')]
 
     # ======= RUN =======
     print("Input G =", G)

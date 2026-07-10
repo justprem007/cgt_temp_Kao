@@ -2,59 +2,21 @@
 brute_force.py — LAYER 1.
 
 Computes Mean (M) and Temperature (T) of a combinatorial game by:
-  1. Building the complete game tree (already done — input is a nested list).
+  1. Building the complete game tree (already done). Input is a nested list only. 
+     Heapgo heaps and CGSuite '{L | R}' strings are converted to nested lists by
+     the caller (main.py) before reaching here. Format detection is in main.py.
   2. Walking bottom-up.
   3. At each non-terminal node, finding its left and right first stable
      alternating followers.
   4. Applying the stable theorem (Cases A/B/C/D from Kao's paper, section 2).
 
-No optimization, no pruning, no handling of incomplete trees.
+In this implementation there is no optimization, no pruning, no
+handling of incomplete trees.
 
-=======================================================================
-NOTATION (from Kao 2000)
-=======================================================================
-  G^L    = the position after Left's move from G.
-  G^R    = the position after Right's move from G.
-
-  Left alternating followers of G :  G^L, G^LR, G^LRL, G^LRLR, ...
-  Right alternating followers of G:  G^R, G^RL, G^RLR, G^RLRL, ...
-
-  Level m: the m-th left alternating follower G^{L(m)} is reached by m moves
-  (starting with L, alternating).
-
-  G^{L(m)} is the LEFT FIRST STABLE alternating follower of G  iff
-      T(G^{L(i)}) > T(G^{L(m)})   for  0 < i < m       (unstable above)
-      T(G^{L(m)}) <= T(G)                               (stable at G's temp)
-
-  But note: when computing T(G) itself, we don't know T(G) yet.
-  Kao's approach — followed here — is: the stable pair is found jointly
-  with T(G) via a consistency condition. See find_stable_pair() below.
-
-=======================================================================
-THE STABLE THEOREM (Section 2 of Kao's paper)
-=======================================================================
-  Let G^{L(m)}, G^{R(n)} be the left and right first stable alternating
-  followers of G. Then:
-
-    Case A:  m odd,  n odd   =>  M(G) = (M(G^{L(m)}) + M(G^{R(n)})) / 2
-                                 T(G) = (M(G^{L(m)}) - M(G^{R(n)})) / 2
-
-    Case B:  m odd,  n even  =>  M(G) = M(G^{R(n)})
-                                 T(G) = M(G^{L(m)}) - M(G^{R(n)})
-
-    Case C:  m even, n odd   =>  M(G) = M(G^{L(m)})
-                                 T(G) = M(G^{L(m)}) - M(G^{R(n)})
-
-    Case D:  m even, n even  =>  M(G) = M(G^{L(m)}) = M(G^{R(n)})
-                                 T(G) = max( T(G^{L(m)}), T(G^{R(n)}) )
 """
 
-
-# The stable-pair solver and the ColdGameError exception is in stable_pair.py
-from stable_pair import find_stable_pair, ColdGameError
-from game_input import is_heapgo_position          # single-source format detection
-from heapgo_to_tree import heapgo_to_tree           # eager Heapgo heap -> tree
-
+# The stable-pair solver 
+from stable_pair import find_stable_pair, _case_name
 
 class GameNode:
     """
@@ -174,45 +136,26 @@ def compute_mt(node, verbose=False, depth=0):
     rchain = [(d, nd, nd.M, nd.T) for (d, nd) in rights]
     m, n, t_val, m_val = find_stable_pair(lchain, rchain)
 
-    # Determine which case applied (for logging)
-    case = _case_name(m, n)
     node.T = t_val
     node.M = m_val
 
     if verbose:
-        print("{}  Stable pair fixed: m={}, n={}   ({})".format(indent, m, n, case))
-
-
-def _case_name(m, n):
-    odd_m = (m % 2 == 1)
-    odd_n = (n % 2 == 1)
-    if odd_m and odd_n: return "Case A (m odd, n odd)"
-    if odd_m:           return "Case B (m odd, n even)"
-    if odd_n:           return "Case C (m even, n odd)"
-    return "Case D (m even, n even)"
+        print("{}  Stable pair fixed: m={}, n={}   ({})".format(
+            indent, m, n, _case_name(m, n)))
 
 
 # -----------------------------------------------------------------------------
-# Top-level API
+# Combining all the above.
 # -----------------------------------------------------------------------------
 def brute_force_mt(game, verbose=False):
     """
-    Top-level entry point for Layer 1.
-
     Arguments:
-        game : a single Heapgo heap [(v, c), ...]  OR  a nested-list game tree
-               (terminals are numbers; internal nodes are [left, right]).
-               CGSuite '{L | R}' strings are parsed to nested lists by the
-               caller (e.g. main.py) before reaching here.
+        game : a nested-list game tree.
         verbose : if True, print the full bottom-up trace.
 
     Returns:
         (M, T) — the mean and temperature of the root.
     """
-    if is_heapgo_position(game):
-        if verbose:
-            print("[brute_force] Heapgo heap -> converting to nested-list tree")
-        game = heapgo_to_tree(game)
     root = build_tree(game)
     compute_mt(root, verbose=verbose)
     return (root.M, root.T)
