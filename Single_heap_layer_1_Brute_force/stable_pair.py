@@ -5,8 +5,7 @@ LOGIC:
 
   * Kao's four stable-theorem cases (A/B/C/D), section 2 of the paper.
   * Stability is a TEMPERATURE-ONLY condition: a (left, right) pair is stable
-    iff LS_T <= t_cand and RS_T <= t_cand. Means never enter the stability
-    test -- they only feed the t_cand/m_cand formula.
+    iff LS_T <= t_cand and RS_T <= t_cand. 
   * Exception: in the (even, even) Case D, a pair is only stable when the two
     means agree (within MEAN_EQ_TOL); otherwise it is forced unstable and the
     search advances toward the higher temperature (left on a tie).

@@ -5,8 +5,7 @@ game format, and (optionally) show it as an ASCII game tree.
     terminal      -> accumulated game_point (a number)
     non-terminal  -> [left_subtree, right_subtree]
 
-Input is a bare single heap [(v, c), ...]. Multiple heaps are rejected by
-heapgo.py (the rules).
+Input is a bare single heap [(value, colour), ...].
 """
 
 import heapgo
@@ -41,7 +40,7 @@ def build_tree(game, root_tag="G"):
     different places never collide.
     """
     if Tree is None:
-        raise ImportError("treelib is not installed. Run: pip install treelib")
+        raise ImportError("treelib is not installed. Cannot build a tree for visualization.")
 
     tree = Tree()
 
@@ -74,6 +73,20 @@ def show_heapgo(heap):
     show_tree(game)
     return game
 
+# -----------------------------------------------------------------------------
+# Quick self-test
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    G = [(2, 'red'), (3, 'red'), (5, 'blue')]
+    tree = heapgo_to_tree(G)
+    print("---------------------------")
+    print("Self test")
+    print("---------------------------")
+    print("Heapgo G =", G)
+    print("As tree  =", tree)
+    expected = [[10, 6], [[0, -4], -10]]
+    print("Expected =", expected)
+    print("Match    =", tree == expected)
 
 # -----------------------------------------------------------------------------
 # Generating the game tree of a heapgo game.
@@ -82,6 +95,9 @@ if __name__ == "__main__":
     #G = [(2, 'red'), (3, 'red'), (5, 'blue')]
     G = [(4, 'red'), (3, 'blue'), (4, 'blue'), (4, 'blue'), (5, 'red'), (5, 'red')]
     tree = heapgo_to_tree(G)
+    print("---------------------------")
+    print("Generating ASCII tree")
+    print("---------------------------")
     print("Heapgo G =", G)
     print("As tree  =", tree)
 
@@ -89,5 +105,4 @@ if __name__ == "__main__":
         print()
         show_tree(tree)
     else:
-        print("\n(treelib not installed; skipping ASCII tree. "
-              "Run: pip install treelib)")
+        print("\n(treelib not installed; skipping ASCII tree.)")
