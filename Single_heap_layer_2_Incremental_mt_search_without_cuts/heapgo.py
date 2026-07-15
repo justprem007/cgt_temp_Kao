@@ -11,25 +11,9 @@ rejected here.
 
 """
 
-
-def _check_single_heap(heap):
-    """Raise unless `heap` is a single heap: a list of (value, color) stones."""
-    if not isinstance(heap, list):
-        raise ValueError(f"Heapgo expects a single heap (a list of stones); got {heap!r}")
-    for stone in heap:
-        ok = (isinstance(stone, tuple) and len(stone) == 2
-              and isinstance(stone[0], (int, float)) and stone[1] in ('red', 'blue'))
-        if not ok:
-            raise ValueError(
-                "Only SINGLE heap of Heapgo is allowed (a list of (value, color) stones). "
-                "Multiple heaps are not supported. "
-                f"Offending element: {stone!r}"
-            )
-
-
 def moves(player, heap, game_point=0):
     """
-    There is only one legal move for `player` on a single heap.
+    The one legal move for `player` on a single heap.
 
     Arguments:
         player     : 'left' or 'right'
@@ -40,7 +24,6 @@ def moves(player, heap, game_point=0):
         (new_heap, point) — the heap after the move and the accumulated score.
         Assumes the heap is non-empty (see is_terminal).
     """
-    _check_single_heap(heap)
     l = heap.copy()
     point = 0
     if player == 'left':
@@ -64,5 +47,4 @@ def moves(player, heap, game_point=0):
 
 def is_terminal(heap):
     """A single heap is terminal when it is empty (no stone left to take)."""
-    _check_single_heap(heap)
     return len(heap) == 0
