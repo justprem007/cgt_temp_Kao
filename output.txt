@@ -1,0 +1,1 @@
+C:/msys64/ucrt64/bin/python.exe: can't open file 'C:/Users/premk/cgt_temp_Kao/run.py': [Errno 2] No such file or directory

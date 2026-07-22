@@ -1,56 +1,56 @@
 """
-run.py - User entry point for LAYER 2 (incremental MT-search).
+run.py — user entry point for Layer 2 ( alternating first incremental MT-search without cuts).
 
-Accepts three input formats for a game G:
-  1. CGSuite string:    G = "{11 | {8 | 0}}"      (parsed to nested-list)
-  2. Nested list:       G = [11, [8, 0]]           (passed straight through)
-  3. Heapgo position:   G = [[(2,'red'), ...]]     (passed straight through)
+You give it a game G in one of three formats. run.py works out which format it
+is, has validate.py check that it is correctly written, builds the matching
+GameGenerator, and hands that to incremental_mt:
 
-The LAZY incremental_mt expands the game tree on demand. For Heapgo and
-nested-list inputs there is NO upfront tree conversion: game_input wraps the
-input in a NestedListGenerator or HeapgoGenerator and incremental_mt
-generates IncNodes only when the algorithm descends to them.
+  1. CGSuite string:  G = "{11 | {8 | 0}}"      -> validate.parse_curly
+                                                    (checks it and returns the
+                                                    nested list in one step)
+                                                    then NestedListGenerator,
+  2. Nested list:     G = [11, [8, 0]]          -> validate.check_nested
+                                                    (used as-is),
+                                                    then NestedListGenerator
+  3. Heapgo heap:     G = [(2, 'red'), ...]     -> validate.check_heapgo
+                                                    (used as-is),
+                                                    then HeapgoGenerator
 
-CGSuite strings are parsed to nested-list form because no streaming
-CGSuite parser exists in this project; this is a one-time text->list
-conversion, not a tree-expansion step.
-
-Two computation modes:
-  - "mean_only"     -> runs only G_u and G_l (4 fields per node).
-                       Stops when M_l == M_u at the root.
-  - "mean_and_temp" -> runs all four trees   (6 fields per node).
-                       Stops when M_l == M_u AND T_l == T_u at the root.
-
-Two stop conditions in both modes:
-  - Convergence (above).
-  - Wall-clock time limit (TIME_LIMIT_SECONDS in incremental_mt.py,
-    overridable per call below).
+incremental_mt only sees a GameGenerator: it expands the game tree on demand,
+generating nodes only as the search descends. The generator's methods are
+called to get the root state, check if a state is terminal, get its value, 
+and get its left and right child states.
 """
 
-from game_parser import parse_game
-from game_input import resolve_generator
+import validate
+from validate import InvalidGameError
+from game_input import NestedListGenerator, HeapgoGenerator
 from stable_pair import ColdGameError
 from incremental_mt import incremental_mt
 
 
 def _prep_input(G):
-    """
-    Resolve G into a GameGenerator for incremental_mt.
+    """ Detect G's format, check it, and return a ready-to-run GameGenerator. """
 
-    Curly-brace strings are parsed to nested-list form first (game_parser);
-    every other form is handed to game_input.resolve_generator, which is the
-    SINGLE place that decides heapgo vs nested-list vs generator. The engine
-    then receives a ready-built generator and performs no format detection of
-    its own.
-    """
+    # --- 1. CGSuite curly-bracket string ---
     if isinstance(G, str):
-        print("[run] Detected CGSuite string input")
-        G = parse_game(G)
-        print(f"[run] Parsed to nested-list: {G}")
+        print("[run] Input type: CGSuite string")
+        tree = validate.parse_curly(G)      # checks it and returns the nested list
+        print("[run] Format OK. Nested-list:", tree)
+        return NestedListGenerator(tree)
 
-    generator = resolve_generator(G)
-    print(f"[run] Built {type(generator).__name__} (detection lives in game_input.py)")
-    return generator
+    # --- 2. Heapgo heap ---
+    if isinstance(G, list) and len(G) > 0 and isinstance(G[0], tuple):
+        print("[run] Input type: Heapgo heap")
+        validate.check_heapgo(G)
+        print("[run] Format OK")
+        return HeapgoGenerator(G)
+
+    # --- 3. Nested list ---
+    print("[run] Input type: nested list")
+    validate.check_nested(G)
+    print("[run] Format OK")
+    return NestedListGenerator(G)
 
 
 def main():
@@ -60,16 +60,15 @@ def main():
     # --- CGSuite string ---
     # G = "{11 | {8 | 0}}"            # Position A from Kao's paper; expect M=8, T=3
     # G = "{11 | {6 | 0}}"            # Position B from Kao's paper; expect M=7, T=4
-    # G = "{0|2}"                     # cold game -> ColdGameError
+    # G = "{0 | 2}"                   # cold game -> ColdGameError
 
     # --- Nested list ---
     # G = [11, [8, 0]]
     # G = [[10, 6], [[0, -4], -10]]   # Heapgo running example; expect M=1, T=7
 
-    # --- Heapgo position (consumed directly, no tree conversion) ---
+    # --- Heapgo heap (single heap; consumed lazily, no tree conversion) ---
     G = [(2, 'red'), (3, 'red'), (5, 'blue')]   # expect M=1, T=7
-    # G = [[(4, 'red'), (9, 'blue'), (6, 'red'), (3, 'red'), (1, 'blue')]]
-    # G = [[(4, 'red'), (3, 'blue'), (4, 'blue'), (4, 'blue'), (5, 'red'), (5, 'red')]]
+    # G = [(4, 'red'), (9, 'blue'), (6, 'red'), (3, 'red'), (1, 'blue')]
 
     # ======= CHOOSE MODE =======
     # "mean_only"     -> compute M bounds only (faster; G_u + G_l).
@@ -82,22 +81,22 @@ def main():
     TIME_LIMIT = None
 
     # ======= MAX WALKS (terminal-visit cap) =======
-    # Integer N -> visit at most N terminal nodes, then report whatever
-    #              bounds have been established (status = walk_limit_reached).
+    # Integer N -> visit at most N terminal nodes, then report whatever bounds
+    #              have been established (status = walk_limit_reached).
     # "max" / None -> run until convergence or the tree is exhausted.
     MAX_WALKS = "max"
 
-    # ======= VERBOSE =======
-    # VERBOSE = True prints walk-by-walk bounds at every back-walk step
-    #               (the high-level summary).
-    # TRACE   = True prints EVERY internal step: each sibling-rule update,
-    #               every chain step, every find_stable_pair iteration, the
-    #               outcome of each of the four trees (G_u, G_l, G_h, G_c).
-    #               Output is large; intended for hand-verifying the algorithm.
-    #               TRACE = True implies VERBOSE = True.
+    # ======= VERBOSE / TRACE =======
+    # VERBOSE = True prints walk-by-walk bounds at every back-walk step.
+    # TRACE   = True prints EVERY internal step (sibling-rule updates, chain
+    #           steps, find_stable_pair iterations, the four-tree outcomes).
+    #           Output is large; TRACE = True implies VERBOSE = True.
+    #
+    # Long output can be saved to a file:
+    #     python run.py > output.txt
+    #     python -X utf8 run.py > output.txt 
     VERBOSE = True
-    TRACE   = False
-
+    TRACE   = True
 
     # ======= RUN =======
     print("Input G          =", G)
@@ -108,14 +107,20 @@ def main():
     print(f"TRACE            = {TRACE}")
     print("-" * 60)
 
-    G_for_alg = _prep_input(G)
+    try:
+        generator = _prep_input(G)
+    except InvalidGameError as e:
+        print("-" * 60)
+        print("INVALID INPUT:", e)
+        print("-" * 60)
+        return
 
     print("-" * 60)
-    print("Running LAYER 2 (lazy incremental MT-search) ...")
+    print("Running LAYER 2 (alternating first incremental MT-search without cuts) ...")
     print("-" * 60)
 
     try:
-        res = incremental_mt(G_for_alg,
+        res = incremental_mt(generator,
                              mode=MODE,
                              time_limit_seconds=TIME_LIMIT,
                              max_walks=MAX_WALKS,

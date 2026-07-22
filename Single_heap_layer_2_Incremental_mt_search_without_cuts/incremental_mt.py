@@ -33,13 +33,13 @@ A-set, so every terminal of the tree is visited exactly once.
 
 import time
 
-from stable_pair import find_stable_pair, ColdGameError   # shared stable-pair solver
-from game_input import (                                  # game-format detection + adapters
-    GameGenerator,
-    NestedListGenerator,
-    HeapgoGenerator,
-    resolve_generator,
-)
+from stable_pair import ColdGameError                     # re-exported for callers
+
+# The individual search steps, one per file.
+from sibling_rule import apply_sibling_rule
+from run_four_trees import run_four_trees
+from alt_first_search import _alt_first_search_terminals
+from trace_format import _fmt_node
 
 # ===========================================================================
 # Tuning knobs - edit here.
@@ -68,7 +68,7 @@ class IncNode:
     """
 
     __slots__ = (
-        'state', 'generator', 'path', 'is_terminal', 'value',
+        'state', 'generator', 'path', 'is_terminal', '_value',
         '_left', '_right',
         'M_l', 'M_u', 'T_at_M_l', 'T_at_M_u', 'T_l', 'T_u',
         'four_tree_ran', 'chain_terminal',
@@ -89,8 +89,11 @@ class IncNode:
         self.mean_locked = False
         self.temp_locked = False
 
+        # A terminal's value is NOT read here. The algorithm does not know a
+        # terminal's value until a walk actually visits it, so we do not ask
+        # the generator for it at node creation -- see the `value` property.
+        self._value = None
         if self.is_terminal:
-            self.value = generator.terminal_value(state)
             # Terminal defaults - unvisited; visit_terminal() will fix later.
             self.M_l = -INFINITY
             self.M_u = INFINITY
@@ -99,7 +102,6 @@ class IncNode:
             self.T_l = 0
             self.T_u = 0
         else:
-            self.value = None
             # Internal defaults.
             self.M_l = -INFINITY
             self.M_u = INFINITY
@@ -128,6 +130,19 @@ class IncNode:
         return self._right
 
     # ------------------------------------------------------------------
+    @property
+    def value(self):
+        """
+        A terminal's value, read from the generator the first time it is
+        needed -- i.e. when a walk visits this terminal. Internal nodes have
+        no value (None).
+        """
+        if not self.is_terminal:
+            return None
+        if self._value is None:
+            self._value = self.generator.terminal_value(self.state)
+        return self._value
+
     def visit_terminal(self):
         assert self.is_terminal
         v = self.value
@@ -150,9 +165,6 @@ class IncNode:
     def converged_temp(self):
         return (self.T_l == self.T_u
                 and 0 <= self.T_l < INFINITY)
-
-    def converged_mean_and_temp(self):
-        return self.converged_mean() and self.T_l == self.T_u
 
 
 # ===========================================================================
@@ -179,357 +191,12 @@ class _MTContext:
         self.chain_terminals.discard(node)
 
 
-# ===========================================================================
-# Trace helpers.
-# ===========================================================================
-def _fmt_node(n):
-    """Short single-line description of an IncNode for trace output.
-
-    For an UNVISITED terminal the true value is HIDDEN -- the algorithm
-    isn't supposed to use it until the terminal is actually visited in a
-    walk, so the trace shouldn't reveal it either. We do show the
-    dummy-edge bookkeeping (M_l, M_u set by sibling rule from prior walks)
-    because that information IS visible to the algorithm.
-    """
-    p = f"'{n.path}'" if n.path else "<root>"
-    if n.is_terminal:
-        if n.is_visited_terminal():
-            return f"{p}[term-visited={n.value}]"
-        return (f"{p}[term-unvisited "
-                f"M=[{n.M_l},{n.M_u}] "
-                f"Tu@Mu={n.T_at_M_u} Tl@Ml={n.T_at_M_l}]")
-    tag = ("4tree" if n.four_tree_ran
-           else ("chainT" if n.chain_terminal else "fresh"))
-    return (f"{p}[{tag} "
-            f"M=[{n.M_l},{n.M_u}] T=[{n.T_l},{n.T_u}] "
-            f"Tu@Mu={n.T_at_M_u} Tl@Ml={n.T_at_M_l}]")
-
-
-def _fmt_chain(chain):
-    """Compact one-line rendering of a chain list."""
-    if not chain:
-        return "(empty)"
-    return "[" + ", ".join(
-        f"(d={d}, '{n.path or chr(949)}', M={M}, T={T})"
-        for d, n, M, T in chain
-    ) + "]"
-
-
-# ===========================================================================
-# Sibling rule + dummy edge.
-# ===========================================================================
-def apply_sibling_rule(parent, walked_direction, s, ctx):
-    """
-    During the back-walk: at `parent`, the path just descended via
-    `walked_direction` ('L' or 'R'). The SIBLING side gets tightened by `s`.
-    Visited terminals are not touched (their M is already exact).
-    Newly-touched terminal siblings are registered with `ctx`.
-    """
-    if walked_direction == 'L':
-        sibling = parent.right
-        side = "right"
-    else:
-        sibling = parent.left
-        side = "left"
-
-    tr = ctx.trace
-    if tr:
-        print(f"      [sibling-rule] at parent {_fmt_node(parent)}, "
-              f"walked='{walked_direction}', s={s}")
-        print(f"        sibling={side} -> {_fmt_node(sibling)}")
-
-    if sibling.is_visited_terminal():
-        if tr:
-            print(f"        sibling is a visited terminal; no change")
-        return
-
-    if sibling.four_tree_ran:
-        # Sibling has REAL bounds from its own back-walk; we must not
-        # disturb them with a dummy-edge approximation. (This regressed
-        # mean_only test 4 when an earlier version of this fix reset
-        # T_at_M_u to 0 on a four_tree_ran L node at root, corrupting
-        # the chain reading.)
-        if tr:
-            print(f"        sibling is four_tree_ran with real bounds; "
-                  f"no change")
-        return
-
-    if walked_direction == 'L':
-        old_Mu = sibling.M_u
-        sibling.M_u = min(sibling.M_u, s)
-        # Dummy edge is terminal-like: T=0 on BOTH sides, so both
-        # T_at_M_u and T_at_M_l read 0 -- otherwise the chain reading
-        # in upper-vs-lower mode disagrees with the node's own T_l/T_u
-        # (the bug Prem flagged: chain reads T=10000 while node shows
-        # T_l=T_u=0).
-        sibling.T_at_M_u = 0
-        sibling.T_at_M_l = 0
-        if tr:
-            print(f"        sibling.M_u: {old_Mu} -> {sibling.M_u}, "
-                  f"T_at_M_u <- 0, T_at_M_l <- 0")
-        if not sibling.is_terminal:
-            sibling.T_l = 0
-            sibling.T_u = 0
-            ctx.mark_chain_terminal(sibling)
-            if tr:
-                print(f"        sibling marked chain_terminal "
-                      f"(T_l=T_u=0)")
-    else:  # 'R'
-        old_Ml = sibling.M_l
-        sibling.M_l = max(sibling.M_l, s)
-        sibling.T_at_M_l = 0
-        sibling.T_at_M_u = 0
-        if tr:
-            print(f"        sibling.M_l: {old_Ml} -> {sibling.M_l}, "
-                  f"T_at_M_l <- 0, T_at_M_u <- 0")
-        if not sibling.is_terminal:
-            sibling.T_l = 0
-            sibling.T_u = 0
-            ctx.mark_chain_terminal(sibling)
-            if tr:
-                print(f"        sibling marked chain_terminal "
-                      f"(T_l=T_u=0)")
-
-
-# ===========================================================================
-# Chain construction.
-# ===========================================================================
-def build_chain(start, first_direction, mode, ctx, label=""):
-    """
-    Alternating chain rooted at `start`. Returns list of
-    (depth, node, M_reading, T_reading). Stops at terminal or
-    chain_terminal node. Newly-encountered terminals are registered.
-    """
-    tr = ctx.trace
-    chain = []
-    current = start
-    next_dir = first_direction
-    depth = 0
-    while True:
-        current = current.left if next_dir == 'L' else current.right
-        depth += 1
-        if mode == 'upper':
-            M_r, T_r = current.M_u, current.T_at_M_u
-        else:
-            M_r, T_r = current.M_l, current.T_at_M_l
-        chain.append((depth, current, M_r, T_r))
-        if tr:
-            stop = ""
-            if current.is_terminal:
-                stop = "  [STOP: terminal]"
-            elif current.chain_terminal:
-                stop = "  [STOP: chain_terminal]"
-            print(f"        chain step depth={depth} dir='{next_dir}': "
-                  f"{_fmt_node(current)} -> read M={M_r}, T={T_r}{stop}")
-        if current.is_terminal:
-            break
-        if current.chain_terminal:
-            break
-        next_dir = 'R' if next_dir == 'L' else 'L'
-    if tr:
-        print(f"        {label}chain = {_fmt_chain(chain)}")
-    return chain
-
-
-# ===========================================================================
-# Four-tree update at a single node.
-# ===========================================================================
-def run_four_trees(node, mode, ctx):
-    if node.is_terminal:
-        return
-
-    tr = ctx.trace
-
-    # Mod 2: capture which halves were ALREADY locked coming in (before this
-    # round runs), so we know which trees to skip and how to judge failures.
-    skip_mean = node.mean_locked          # mean already known
-    skip_temp = node.temp_locked          # temperature already known
-    temp_in_play = (mode == "mean_and_temp")
-
-    if tr:
-        print(f"      [run_four_trees] at {_fmt_node(node)}, mode={mode}"
-              f"{'  [mean locked]' if skip_mean else ''}"
-              f"{'  [temp locked]' if (skip_temp and temp_in_play) else ''}")
-
-    # If everything that applies is already locked, there is nothing to do.
-    if skip_mean and (not temp_in_play or skip_temp):
-        if tr:
-            print(f"      node fully locked (M={node.M_l}"
-                  f"{'' if not temp_in_play else f', T={node.T_l}'}); "
-                  f"skipping all trees")
-        node.four_tree_ran = True
-        ctx.clear_chain_terminal(node)
-        return
-
-    failed = []
-
-    # ---- mean trees (G_u, G_l): only if mean not locked ----
-    if not skip_mean:
-        try:
-            if tr:
-                print(f"      -- G_u (upper mean: chain L upper, chain R upper) --")
-            t, m = _run_tree(node, 'L', 'upper', 'R', 'upper', ctx)
-            node.M_u, node.T_at_M_u = m, t
-            if tr:
-                print(f"      G_u: node.M_u <- {m}, node.T_at_M_u <- {t}")
-        except ColdGameError as e:
-            failed.append('G_u')
-            if tr:
-                print(f"      G_u FAILED ({e}); node.M_u kept at {node.M_u}")
-
-        try:
-            if tr:
-                print(f"      -- G_l (lower mean: chain L lower, chain R lower) --")
-            t, m = _run_tree(node, 'L', 'lower', 'R', 'lower', ctx)
-            node.M_l, node.T_at_M_l = m, t
-            if tr:
-                print(f"      G_l: node.M_l <- {m}, node.T_at_M_l <- {t}")
-        except ColdGameError as e:
-            failed.append('G_l')
-            if tr:
-                print(f"      G_l FAILED ({e}); node.M_l kept at {node.M_l}")
-
-        # Lock the mean only once the node is FULLY converged: the mean has
-        # closed (M_l == M_u) AND the temperature has closed (T_l == T_u, i.e.
-        # the hot tree T_h and cold tree T_c agree). Locking on the mean alone
-        # is wrong -- the mean can close a walk or two before everything below
-        # is explored, freezing a stale T_at_M_u that the parent's upper chain
-        # then reads. Waiting for the temperature to close too guarantees the
-        # subtree is settled, so nothing half-baked gets frozen.
-        if node.converged_mean() and node.T_l == node.T_u:
-            node.mean_locked = True
-            if tr:
-                print(f"      *** MEAN LOCKED at {node.M_l} (no further "
-                      f"G_u/G_l for this node) ***")
-    elif tr:
-        print(f"      mean already locked at {node.M_l}; skipping G_u, G_l")
-
-    # ---- temperature trees (G_h, G_c): only in mean_and_temp & not locked ----
-    if temp_in_play:
-        if not skip_temp:
-            try:
-                if tr:
-                    print(f"      -- G_h (hot/T_u: chain L upper, chain R lower) --")
-                t, _ = _run_tree(node, 'L', 'upper', 'R', 'lower', ctx)
-                node.T_u = t
-                if tr:
-                    print(f"      G_h: node.T_u <- {t}")
-            except ColdGameError as e:
-                failed.append('G_h')
-                if tr:
-                    print(f"      G_h FAILED ({e}); node.T_u kept at {node.T_u}")
-
-            try:
-                if tr:
-                    print(f"      -- G_c (cold/T_l: chain L lower, chain R upper) --")
-                t, _ = _run_tree(node, 'L', 'lower', 'R', 'upper', ctx)
-                node.T_l = t
-                if tr:
-                    print(f"      G_c: node.T_l <- {t}")
-            except ColdGameError as e:
-                failed.append('G_c')
-                if tr:
-                    print(f"      G_c FAILED ({e}); node.T_l kept at {node.T_l}")
-
-            # Lock the temperature if it just closed.
-            if node.converged_temp():
-                node.temp_locked = True
-                if tr:
-                    print(f"      *** TEMP LOCKED at {node.T_l} (no further "
-                          f"G_h/G_c for this node) ***")
-        elif tr:
-            print(f"      temp already locked at {node.T_l}; skipping G_h, G_c")
-
-    # ---- cold-game detection ----
-    # We attempt 2 mean trees (unless mean was locked) and, in mean_and_temp,
-    # 2 temp trees (unless temp was locked). A node is cold iff every tree we
-    # ACTUALLY attempted failed AND we carried in no locked half to fall back
-    # on. A locked half coming in means the node already has real information,
-    # so it is not cold.  (mean_only mode never runs temp trees, but that is
-    # NOT prior information -- so it must not suppress the raise.)
-    num_attempted = (0 if skip_mean else 2)
-    if temp_in_play and not skip_temp:
-        num_attempted += 2
-    had_prior_info = skip_mean or (temp_in_play and skip_temp)
-
-    if num_attempted > 0 and len(failed) == num_attempted and not had_prior_info:
-        raise ColdGameError(f"All attempted trees failed at node: {failed}")
-
-    node.four_tree_ran = True
-    ctx.clear_chain_terminal(node)
-    if tr:
-        print(f"      node now four_tree_ran=True: {_fmt_node(node)}")
-
-
-def _run_tree(node, L_dir, L_mode, R_dir, R_mode, ctx):
-    if ctx.trace:
-        print(f"        building chain L (first='{L_dir}', mode={L_mode}):")
-    lefts  = build_chain(node, L_dir, L_mode, ctx, label="L-")
-    if ctx.trace:
-        print(f"        building chain R (first='{R_dir}', mode={R_mode}):")
-    rights = build_chain(node, R_dir, R_mode, ctx, label="R-")
-    _m, _n, t_cand, m_cand = find_stable_pair(lefts, rights, ctx=ctx)
-    return (t_cand, m_cand)
-
-
-def _alt_first_search_terminals(root, ctx=None):
-    """Yield terminal IncNodes in alternating-first-search (A^n) order.
-
-    A^1: from the root, the chain that starts Left and then alternates
-         (L, R, L, ...) up to the first terminal, followed by the chain that
-         starts Right and alternates (R, L, R, ...) up to the first terminal.
-         Every node passed through is collected (terminals and non-terminals).
-    A^n (n >= 2): for each NON-terminal node of A^(n-1), in order, repeat that
-         node's last move and then alternate up to a terminal, collecting the
-         nodes passed through.
-
-    Terminals are yielded in the order they appear, one A-set after another.
-    Because each non-terminal X contributes its "alternate" child while X sits
-    in a chain and its "repeat" child when X seeds the next set, both children
-    of every non-terminal are eventually expanded, so every terminal of the
-    tree is yielded exactly once.
-    """
-    tr = getattr(ctx, "trace", False) if ctx is not None else False
-
-    def chain_from(start, first_dir):
-        """From `start`, step `first_dir`, then strictly alternate, collecting
-        each node up to (and including) the first terminal."""
-        nodes = []
-        node = start
-        d = first_dir
-        while True:
-            node = node.left if d == 'L' else node.right
-            nodes.append(node)
-            if node.is_terminal:
-                break
-            d = 'R' if d == 'L' else 'L'
-        return nodes
-
-    # A^1: Left-first chain, then Right-first chain, both from the root.
-    A = chain_from(root, 'L') + chain_from(root, 'R')
-    level = 1
-    while A:
-        if tr:
-            print("  A^{} = {{ {} }}".format(
-                level, ", ".join("G^" + (n.path or "") for n in A)))
-        # Yield this set's terminals, in order.
-        for node in A:
-            if node.is_terminal:
-                yield node
-        # Build the next set from this set's non-terminals, in order, each
-        # repeating its own last move and then alternating.
-        nxt = []
-        for node in A:
-            if not node.is_terminal:
-                nxt += chain_from(node, node.path[-1])
-        A = nxt
-        level += 1
 
 
 # ===========================================================================
 # Top-level API.
 # ===========================================================================
-def incremental_mt(game,
+def incremental_mt(generator,
                    mode="mean_and_temp",
                    time_limit_seconds=None,
                    max_walks=None,
@@ -539,7 +206,9 @@ def incremental_mt(game,
     Layer-2 incremental MT-search with lazy tree generation.
 
     Arguments:
-      game                : nested-list game, Heapgo position, or GameGenerator.
+      generator           : a GameGenerator (built in run.py from the raw input
+                            after validation). The engine expands it lazily and
+                            performs no format detection or checking of its own.
       mode                : "mean_only" or "mean_and_temp" (default).
       time_limit_seconds  : wall-clock cap (defaults to TIME_LIMIT_SECONDS).
       max_walks           : cap on the number of terminal-visit walks. Pass an
@@ -579,7 +248,6 @@ def incremental_mt(game,
     t_start = time.time()
     elapsed = lambda: time.time() - t_start
 
-    generator = resolve_generator(game)
     root = IncNode(generator.root_state(), generator, path='')
 
     # Mod 3: snapshot of the root's bounds as of the LAST FULLY-COMPLETED
@@ -609,7 +277,7 @@ def incremental_mt(game,
         }
 
     def converged():
-        return (root.converged_mean_and_temp()
+        return (root.converged_mean() and root.converged_temp()
                 if mode == "mean_and_temp"
                 else root.converged_mean())
 
@@ -669,6 +337,7 @@ def incremental_mt(game,
                   f"via '{path}' ===")
 
         term.visit_terminal()
+        ctx.clear_chain_terminal(term)   # a visited terminal is real; drop any dummy flag
         s = term.value
 
         # ---- collect ancestors root -> term (lazy lookups along the way) ----
